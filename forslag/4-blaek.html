@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="da">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Hvidt</title>
+<meta name="description" content="Adam Hvidt · a@hvidt.net">
+<meta name="color-scheme" content="light dark">
+<link rel="icon" href="data:,">
+<style>
+:root{--bg:#f4f1ea;--ink:#18203a;--muted:#5d6273}
+@media (prefers-color-scheme:dark){:root{--bg:#07090d;--ink:#b9c8ff;--muted:#8d93a6}}
+html,body{margin:0;height:100%;overflow:hidden;background:var(--bg)}
+canvas{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none}
+.mail{position:fixed;left:0;right:0;bottom:max(20px,env(safe-area-inset-bottom));text-align:center;font:400 14px/1.4 ui-sans-serif,-apple-system,"Helvetica Neue",Arial,sans-serif;letter-spacing:.06em;color:var(--muted);pointer-events:none}
+.mail a{color:inherit;text-decoration:none;pointer-events:auto;border-bottom:1px solid transparent;transition:border-color .2s}
+.mail a:hover,.mail a:focus-visible{border-color:currentColor;outline:none}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+</style>
+</head>
+<body>
+<h1 class="sr">Adam Hvidt</h1>
+<canvas id="c" aria-hidden="true"></canvas>
+<p class="mail">Adam Hvidt · <a href="mailto:a@hvidt.net">a@hvidt.net</a></p>
+<script>
+(() => {
+  // Ink in water. Dragging drops ink that spreads and fades; when left alone,
+  // the ink gathers into the name, holds for a moment and dissolves again.
+  const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+  const RM = matchMedia('(prefers-reduced-motion: reduce)');
+  const DK = matchMedia('(prefers-color-scheme: dark)');
+  const WORD = 'Hvidt', NAME_PTS = 650, MAXP = 2600;
+  const FONT = px => `600 ${px}px "Iowan Old Style","Palatino Linotype",Palatino,"Book Antiqua",Georgia,serif`;
+  let W, H, dpr, targets = [], tr = 4, sprite, ps = [], raf = 0, last = 0, col = {}, glow = false;
+  let state = 'free', stateAt = 0, lastInput = -1e9, cycleEnd = -1e9;
+  const P = { x: 0, y: 0, down: false, t0: 0, sx: 0, sy: 0, moved: 0 };
+
+  // Seeded 2D Perlin noise for the flow field.
+  const perm = new Uint8Array(512);
+  { const p = [...Array(256).keys()]; let s = 1301;
+    for (let i = 255; i > 0; i--) { s = (s * 16807) % 2147483647; const j = s % (i + 1); [p[i], p[j]] = [p[j], p[i]]; }
+    for (let i = 0; i < 512; i++) perm[i] = p[i & 255]; }
+  const fade = t => t * t * t * (t * (t * 6 - 15) + 10);
+  const grad = (h, x, y) => ((h & 1) ? -x : x) + ((h & 2) ? -y : y);
+  function noise(x, y) {
+    const X = Math.floor(x), Y = Math.floor(y), xf = x - X, yf = y - Y, xi = X & 255, yi = Y & 255, u = fade(xf), v = fade(yf);
+    const aa = perm[perm[xi] + yi], ab = perm[perm[xi] + yi + 1], ba = perm[perm[xi + 1] + yi], bb = perm[perm[xi + 1] + yi + 1];
+    const x1 = grad(aa, xf, yf) + u * (grad(ba, xf - 1, yf) - grad(aa, xf, yf));
+    const x2 = grad(ab, xf, yf - 1) + u * (grad(bb, xf - 1, yf - 1) - grad(ab, xf, yf - 1));
+    return x1 + v * (x2 - x1);
+  }
+
+  function readColors() {
+    const s = getComputedStyle(document.documentElement);
+    for (const k of ['bg', 'ink']) col[k] = s.getPropertyValue('--' + k).trim();
+    glow = DK.matches;
+    // Soft round brush, rendered once per theme.
+    sprite = document.createElement('canvas'); sprite.width = sprite.height = 64;
+    const g = sprite.getContext('2d'), rg = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+    rg.addColorStop(0, col.ink); rg.addColorStop(0.45, col.ink + 'a0'); rg.addColorStop(1, col.ink + '00');
+    g.fillStyle = rg; g.fillRect(0, 0, 64, 64);
+  }
+
+  function layout() {
+    W = innerWidth; H = innerHeight; dpr = Math.min(2, devicePixelRatio || 1);
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+    const fontPx = Math.min(W * 0.27, H * 0.36);
+    const off = document.createElement('canvas'); off.width = W; off.height = H;
+    const o = off.getContext('2d', { willReadFrequently: true });
+    o.font = FONT(fontPx); o.textAlign = 'center';
+    const m = o.measureText(WORD);
+    o.fillText(WORD, W / 2, H * 0.47 + (m.actualBoundingBoxAscent - m.actualBoundingBoxDescent) / 2);
+    const d = o.getImageData(0, 0, W, H).data;
+    let area = 0; for (let i = 3; i < d.length; i += 16) if (d[i] > 128) area += 4;
+    const s = Math.max(3, Math.sqrt(area / NAME_PTS));
+    tr = s * 1.15; targets = [];
+    for (let y = 0; y < H; y += s) for (let x = 0; x < W; x += s) {
+      const qx = Math.min(W - 1, Math.round(x)), qy = Math.min(H - 1, Math.round(y));
+      if (d[(qy * W + qx) * 4 + 3] > 128) targets.push([qx, qy]);
+    }
+  }
+
+  function drop(x, y, vx, vy, heavy) {
+    if (ps.length >= MAXP) { const i = ps.findIndex(p => !p.tgt); if (i >= 0) ps.splice(i, 1); else return; }
+    ps.push({ x, y, vx, vy, r: heavy ? 5 + Math.random() * 6 : 3 + Math.random() * 3, r1: heavy ? 28 + Math.random() * 40 : 14 + Math.random() * 16,
+      a: (heavy ? 0.1 + Math.random() * 0.1 : 0.06 + Math.random() * 0.06) * (glow ? 0.75 : 1), age: 0, life: 260 + Math.random() * 200, fi: 1, tgt: false, tx: 0, ty: 0 });
+  }
+
+  function gather(now) {
+    state = 'gather'; stateAt = now;
+    const pts = targets.slice().sort(() => Math.random() - 0.5);
+    const free = ps.filter(p => !p.tgt && p.age < p.life * 0.7).sort(() => Math.random() - 0.5);
+    const reuse = Math.min(free.length, Math.floor(pts.length * 0.5));
+    for (let i = 0; i < pts.length; i++) {
+      let p;
+      if (i < reuse) p = free[i];
+      else {
+        const ang = Math.random() * 6.283, dist = 150 + Math.random() * 300;
+        p = { x: pts[i][0] + Math.cos(ang) * dist, y: pts[i][1] + Math.sin(ang) * dist, vx: 0, vy: 0, r: 3, r1: 0, a: 0, age: 0, life: 1, fi: 0, tgt: false };
+        if (ps.length >= MAXP) { const j = ps.findIndex(q => !q.tgt); if (j >= 0) ps.splice(j, 1); else continue; }
+        ps.push(p);
+      }
+      p.tgt = true; p.tx = pts[i][0]; p.ty = pts[i][1]; p.age = 0;
+      p.r1 = tr * (0.8 + Math.random() * 0.5); p.a = glow ? 0.24 + Math.random() * 0.14 : 0.22 + Math.random() * 0.18;
+    }
+  }
+
+  function dissolve(now) {
+    state = 'free'; cycleEnd = now;
+    for (const p of ps) if (p.tgt) {
+      p.tgt = false; p.age = 0; p.life = 200 + Math.random() * 180; p.r1 = p.r * (2.5 + Math.random() * 2);
+      p.vx += (Math.random() - 0.5) * 1.2; p.vy += (Math.random() - 0.5) * 1.2 - 0.3;
+    }
+  }
+
+  function step(k, t) {
+    const now = performance.now(), idle = now - lastInput;
+    if (state === 'free' && idle > 3800 && now - cycleEnd > 1600 && !P.down) gather(now);
+    else if (state === 'gather' && now - stateAt > 2600) { state = 'hold'; stateAt = now; }
+    else if (state === 'hold' && now - stateAt > 2400) dissolve(now);
+    const ft = t * 0.00004, ease = state === 'gather' ? Math.min(1, (now - stateAt) / 1400) : 1;
+    for (let i = ps.length - 1; i >= 0; i--) {
+      const p = ps[i];
+      const ang = noise(p.x * 0.0028, p.y * 0.0028 + ft) * 9.5;
+      const flow = p.tgt ? (state === 'hold' ? 0.012 : 0.05 * (1 - ease)) : 0.045;
+      p.vx += Math.cos(ang) * flow * k; p.vy += Math.sin(ang) * flow * k;
+      if (p.tgt) {
+        p.vx += (p.tx - p.x) * 0.012 * ease * k; p.vy += (p.ty - p.y) * 0.012 * ease * k;
+        p.vx *= 0.86 ** k; p.vy *= 0.86 ** k;
+        p.fi = Math.min(1, p.fi + 0.02 * k);
+        p.r += (p.r1 - p.r) * 0.05 * k;
+      } else {
+        p.vx *= 0.97 ** k; p.vy *= 0.97 ** k;
+        p.age += k; p.r += (p.r1 - p.r) * 0.012 * k;
+        if (p.age > p.life) { ps.splice(i, 1); continue; }
+      }
+      p.x += p.vx * k; p.y += p.vy * k;
+    }
+  }
+
+  function draw() {
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
+    ctx.fillStyle = col.bg; ctx.fillRect(0, 0, W, H);
+    ctx.globalCompositeOperation = glow ? 'lighter' : 'source-over';
+    for (const p of ps) {
+      const a = p.a * p.fi * (p.tgt ? 1 : (1 - p.age / p.life) ** 1.4);
+      if (a < 0.004) continue;
+      ctx.globalAlpha = a; ctx.drawImage(sprite, p.x - p.r, p.y - p.r, p.r * 2, p.r * 2);
+    }
+    ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
+  }
+
+  function frame(t) {
+    raf = requestAnimationFrame(frame);
+    const k = Math.min(3, (t - last) / 16.67 || 1); last = t;
+    step(k, t); draw();
+  }
+  function start() { if (!raf && !RM.matches && !document.hidden) { last = performance.now(); raf = requestAnimationFrame(frame); } }
+  function stop() { cancelAnimationFrame(raf); raf = 0; }
+  function still() {
+    // Reduced motion: the name as settled ink with a few loose wisps; drawing still adds ink, without movement.
+    if (!ps.some(p => p.tgt)) {
+      ps = [];
+      for (const [x, y] of targets) ps.push({ x: x + (Math.random() - 0.5) * tr, y: y + (Math.random() - 0.5) * tr, vx: 0, vy: 0, r: tr * (1 + Math.random() * 0.6), r1: 0, a: glow ? 0.3 : 0.28, age: 0, life: 1, fi: 1, tgt: true });
+      for (let i = 0; i < 40; i++) ps.push({ x: Math.random() * W, y: Math.random() * H, vx: 0, vy: 0, r: 20 + Math.random() * 50, r1: 0, a: 0.05, age: 0, life: 1, fi: 1, tgt: true });
+    }
+    draw();
+  }
+
+  function input(e) {
+    const dx = e.clientX - P.x, dy = e.clientY - P.y, dist = Math.hypot(dx, dy);
+    if (P.down) {
+      P.moved += dist;
+      if (!RM.matches && (state === 'gather' || state === 'hold')) dissolve(performance.now());
+      const n = Math.min(20, Math.ceil(dist / 6));
+      for (let i = 0; i < n; i++) { const f = i / n; drop(P.x + dx * f, P.y + dy * f, dx * 0.12, dy * 0.12, true); }
+      lastInput = performance.now();
+    } else if (e.pointerType === 'mouse' && dist > 0) {
+      const n = Math.floor(dist / 14);
+      for (let i = 0; i < n; i++) { const f = i / n; drop(P.x + dx * f, P.y + dy * f, dx * 0.05, dy * 0.05, false); }
+      if (state === 'free') lastInput = performance.now();
+    }
+    P.x = e.clientX; P.y = e.clientY;
+    if (RM.matches) { for (const p of ps) if (!p.tgt) { p.tgt = true; p.r = p.r1 * 0.6; } draw(); }
+  }
+
+  cv.addEventListener('pointermove', input);
+  cv.addEventListener('pointerdown', e => { P.x = P.sx = e.clientX; P.y = P.sy = e.clientY; P.down = true; P.moved = 0; P.t0 = performance.now(); cv.setPointerCapture(e.pointerId); });
+  cv.addEventListener('pointerup', e => {
+    P.down = false;
+    if (performance.now() - P.t0 < 350 && P.moved < 10) {
+      // A tap drops a blot.
+      for (let i = 0; i < 26; i++) { const a = Math.random() * 6.283, v = Math.random() * 2.2; drop(e.clientX, e.clientY, Math.cos(a) * v, Math.sin(a) * v, true); }
+      lastInput = performance.now();
+      if (RM.matches) { for (const p of ps) if (!p.tgt) { p.tgt = true; p.r = p.r1 * 0.6; } draw(); }
+    }
+  });
+  cv.addEventListener('pointercancel', () => { P.down = false; });
+
+  let rt; addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(() => { if (!innerWidth || !innerHeight) return; layout(); if (RM.matches) { ps = []; still(); } }, 120); });
+  document.addEventListener('visibilitychange', () => document.hidden ? stop() : start());
+  RM.addEventListener('change', () => { if (RM.matches) { stop(); ps = []; still(); } else { ps = []; state = 'free'; lastInput = performance.now() - 3000; start(); } });
+  DK.addEventListener('change', () => { readColors(); if (RM.matches) still(); });
+
+  // Wait until the viewport has a size (hidden iframes and panes can report 0).
+  (function boot() {
+    if (!innerWidth || !innerHeight) return setTimeout(boot, 100);
+    readColors(); layout();
+    lastInput = performance.now() - 3000; // the name forms shortly after load
+    if (RM.matches) still(); else start();
+  })();
+})();
+</script>
+</body>
+</html>

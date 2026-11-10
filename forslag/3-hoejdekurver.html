@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="da">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Hvidt</title>
+<meta name="description" content="Adam Hvidt · a@hvidt.net">
+<meta name="color-scheme" content="light dark">
+<link rel="icon" href="data:,">
+<style>
+:root{--bg:#f2ede1;--land:#9a6b43;--water:#4f7fa6;--ink:#3a2f25;--muted:#6d5f50;--card:rgba(242,237,225,.82)}
+@media (prefers-color-scheme:dark){:root{--bg:#0e1316;--land:#c49a6c;--water:#6ea3c9;--ink:#e8dccb;--muted:#a3968a;--card:rgba(14,19,22,.78)}}
+html,body{margin:0;height:100%;overflow:hidden;background:var(--bg)}
+canvas{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none;cursor:crosshair}
+.sig{position:fixed;left:max(22px,env(safe-area-inset-left));bottom:max(22px,env(safe-area-inset-bottom));padding:12px 16px 12px;background:var(--card);border:1px solid color-mix(in srgb,var(--ink) 35%,transparent);color:var(--ink);pointer-events:none;-webkit-backdrop-filter:blur(2px);backdrop-filter:blur(2px)}
+.sig h1{margin:0;font:600 22px/1 "Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;letter-spacing:.32em;text-transform:uppercase;margin-right:-.32em}
+.sig p{margin:7px 0 0;font:400 12px/1.4 ui-sans-serif,-apple-system,"Helvetica Neue",Arial,sans-serif;letter-spacing:.06em;color:var(--muted)}
+.sig a{color:inherit;text-decoration:none;pointer-events:auto;border-bottom:1px solid transparent}
+.sig a:hover,.sig a:focus-visible{border-color:currentColor;outline:none}
+.bar{display:flex;margin-top:9px;height:4px;width:96px;border:1px solid var(--ink)}
+.bar i{flex:1}.bar i:nth-child(odd){background:var(--ink)}
+</style>
+</head>
+<body>
+<canvas id="c" aria-hidden="true"></canvas>
+<div class="sig"><h1>Hvidt</h1><p>Adam Hvidt · <a href="mailto:a@hvidt.net">a@hvidt.net</a></p><div class="bar"><i></i><i></i><i></i><i></i></div></div>
+<script>
+(() => {
+  // Generated contour map. The pointer lifts the terrain into a hill; a tap leaves a named summit.
+  const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+  const RM = matchMedia('(prefers-reduced-motion: reduce)');
+  const DK = matchMedia('(prefers-color-scheme: dark)');
+  const STEP = 0.075, L0 = -1.2, MAXSUM = 6;
+  let W, H, dpr, cs, gc, gr, F, raf = 0, last = 0, ox = 0, oy = 0, col = {};
+  const hill = { x: 0, y: 0, a: 0, s: 100 }, summits = [];
+  const P = { x: 0, y: 0, in: false, t0: 0, sx: 0, sy: 0 };
+
+  // Classic 2D Perlin noise, seeded.
+  const perm = new Uint8Array(512);
+  { const p = [...Array(256).keys()]; let s = 7919;
+    for (let i = 255; i > 0; i--) { s = (s * 16807) % 2147483647; const j = s % (i + 1); [p[i], p[j]] = [p[j], p[i]]; }
+    for (let i = 0; i < 512; i++) perm[i] = p[i & 255]; }
+  const fade = t => t * t * t * (t * (t * 6 - 15) + 10);
+  const grad = (h, x, y) => ((h & 1) ? -x : x) + ((h & 2) ? -y : y) * ((h & 4) ? 0.5 : 1);
+  function noise(x, y) {
+    const X = Math.floor(x), Y = Math.floor(y), xf = x - X, yf = y - Y, xi = X & 255, yi = Y & 255;
+    const u = fade(xf), v = fade(yf);
+    const aa = perm[perm[xi] + yi], ab = perm[perm[xi] + yi + 1], ba = perm[perm[xi + 1] + yi], bb = perm[perm[xi + 1] + yi + 1];
+    const x1 = grad(aa, xf, yf) + u * (grad(ba, xf - 1, yf) - grad(aa, xf, yf));
+    const x2 = grad(ab, xf, yf - 1) + u * (grad(bb, xf - 1, yf - 1) - grad(ab, xf, yf - 1));
+    return x1 + v * (x2 - x1);
+  }
+  const fbm = (x, y) => noise(x, y) * 0.62 + noise(x * 2.03 + 5.2, y * 2.03 + 1.3) * 0.27 + noise(x * 4.1 + 9.1, y * 4.1 + 3.7) * 0.11;
+
+  function readColors() {
+    const s = getComputedStyle(document.documentElement);
+    for (const k of ['bg', 'land', 'water', 'ink', 'muted']) col[k] = s.getPropertyValue('--' + k).trim();
+  }
+
+  function layout() {
+    W = innerWidth; H = innerHeight; dpr = Math.min(2, devicePixelRatio || 1);
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+    cs = W > 900 ? 10 : 8;
+    gc = Math.ceil(W / cs) + 1; gr = Math.ceil(H / cs) + 1;
+    F = new Float32Array(gc * gr);
+    hill.s = Math.max(70, Math.min(150, Math.min(W, H) * 0.14));
+    if (!hill.x) { hill.x = W * 0.62; hill.y = H * 0.42; }
+  }
+
+  function heightAt(px, py) {
+    const sc = 1 / 340;
+    let v = fbm((px + ox) * sc, (py + oy) * sc) * 1.25;
+    if (hill.a > 0.001) { const d2 = (px - hill.x) ** 2 + (py - hill.y) ** 2; v += hill.a * Math.exp(-d2 / (2 * hill.s * hill.s)); }
+    for (const s of summits) { const d2 = (px - s.x) ** 2 + (py - s.y) ** 2; v += s.a * Math.exp(-d2 / (2 * s.s * s.s)); }
+    return v;
+  }
+
+  function field() { for (let j = 0; j < gr; j++) for (let i = 0; i < gc; i++) F[j * gc + i] = heightAt(i * cs, j * cs); }
+
+  // Marching squares: segment table by corner case (tl=8, tr=4, br=2, bl=1); edges 0 top, 1 right, 2 bottom, 3 left.
+  const SEG = [[], [3, 2], [2, 1], [3, 1], [0, 1], [3, 0, 2, 1], [0, 2], [3, 0], [3, 0], [0, 2], [0, 1, 3, 2], [0, 1], [3, 1], [2, 1], [3, 2], []];
+  function contours() {
+    const paths = [new Path2D(), new Path2D(), new Path2D(), new Path2D()]; // land, land-index, water, water-index
+    const ex = [0, 0, 0, 0], ey = [0, 0, 0, 0];
+    for (let j = 0; j < gr - 1; j++) for (let i = 0; i < gc - 1; i++) {
+      const a = F[j * gc + i], b = F[j * gc + i + 1], c = F[(j + 1) * gc + i + 1], d = F[(j + 1) * gc + i];
+      const lo = Math.min(a, b, c, d), hi = Math.max(a, b, c, d);
+      const x0 = i * cs, y0 = j * cs;
+      for (let li = Math.ceil((lo - L0) / STEP); li * STEP + L0 <= hi; li++) {
+        const L = li * STEP + L0;
+        const k = (a >= L ? 8 : 0) | (b >= L ? 4 : 0) | (c >= L ? 2 : 0) | (d >= L ? 1 : 0);
+        const s = SEG[k]; if (!s.length) continue;
+        ex[0] = x0 + cs * (L - a) / (b - a); ey[0] = y0;
+        ex[1] = x0 + cs; ey[1] = y0 + cs * (L - b) / (c - b);
+        ex[2] = x0 + cs * (L - d) / (c - d); ey[2] = y0 + cs;
+        ex[3] = x0; ey[3] = y0 + cs * (L - a) / (d - a);
+        const p = paths[(L < 0 ? 2 : 0) + (li % 5 === 0 ? 1 : 0)];
+        for (let q = 0; q < s.length; q += 2) { p.moveTo(ex[s[q]], ey[s[q]]); p.lineTo(ex[s[q + 1]], ey[s[q + 1]]); }
+      }
+    }
+    return paths;
+  }
+
+  function draw() {
+    field();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = col.bg; ctx.fillRect(0, 0, W, H);
+    const [land, landI, water, waterI] = contours();
+    ctx.lineJoin = ctx.lineCap = 'round';
+    ctx.strokeStyle = col.water; ctx.globalAlpha = 0.45; ctx.lineWidth = 0.8; ctx.stroke(water);
+    ctx.globalAlpha = 0.8; ctx.lineWidth = 1.4; ctx.stroke(waterI);
+    ctx.strokeStyle = col.land; ctx.globalAlpha = 0.5; ctx.lineWidth = 0.8; ctx.stroke(land);
+    ctx.globalAlpha = 0.9; ctx.lineWidth = 1.5; ctx.stroke(landI);
+    ctx.globalAlpha = 1;
+    // Summit markers with spot heights.
+    ctx.font = '500 11px ui-sans-serif,-apple-system,"Helvetica Neue",Arial,sans-serif';
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    for (const s of summits) {
+      if (s.a < 0.05) continue;
+      ctx.globalAlpha = Math.min(1, s.a / 0.4);
+      ctx.fillStyle = col.ink; ctx.beginPath(); ctx.moveTo(s.x, s.y - 5); ctx.lineTo(s.x + 4.5, s.y + 3); ctx.lineTo(s.x - 4.5, s.y + 3); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = col.muted; ctx.fillText(Math.round((heightAt(s.x, s.y) - L0) * 80) + ' m', s.x + 9, s.y);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function step(k, t) {
+    ox += 0.12 * k; oy += 0.05 * k;
+    hill.x += (P.x - hill.x) * 0.1 * k; hill.y += (P.y - hill.y) * 0.1 * k;
+    hill.a += ((P.in ? 0.95 : 0) - hill.a) * 0.035 * k;
+    for (let i = summits.length - 1; i >= 0; i--) {
+      const s = summits[i];
+      s.a += ((s.dying ? 0 : s.goal) - s.a) * 0.05 * k;
+      if (s.dying && s.a < 0.01) summits.splice(i, 1);
+    }
+  }
+
+  function addSummit(x, y) {
+    const live = summits.filter(s => !s.dying);
+    if (live.length >= MAXSUM) live[0].dying = true;
+    summits.push({ x, y, a: RM.matches ? 0.7 : 0, goal: 0.55 + Math.random() * 0.3, s: 45 + Math.random() * 45, dying: false });
+  }
+
+  function frame(t) {
+    raf = requestAnimationFrame(frame);
+    const k = Math.min(3, (t - last) / 16.67 || 1); last = t;
+    step(k, t); draw();
+  }
+  function start() { if (!raf && !RM.matches && !document.hidden) { last = performance.now(); raf = requestAnimationFrame(frame); } }
+  function stop() { cancelAnimationFrame(raf); raf = 0; }
+  function still() { hill.a = 0; draw(); }
+
+  cv.addEventListener('pointermove', e => { P.x = e.clientX; P.y = e.clientY; P.in = e.pointerType === 'mouse' || e.buttons > 0; });
+  cv.addEventListener('pointerdown', e => { P.x = P.sx = e.clientX; P.y = P.sy = e.clientY; P.in = true; P.t0 = performance.now(); cv.setPointerCapture(e.pointerId); });
+  cv.addEventListener('pointerup', e => {
+    if (performance.now() - P.t0 < 350 && Math.hypot(e.clientX - P.sx, e.clientY - P.sy) < 10) { addSummit(e.clientX, e.clientY); if (RM.matches) still(); }
+    if (e.pointerType !== 'mouse') P.in = false;
+  });
+  cv.addEventListener('pointerleave', () => { P.in = false; });
+  cv.addEventListener('pointercancel', () => { P.in = false; });
+
+  let rt; addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(() => { if (!innerWidth || !innerHeight) return; layout(); if (RM.matches) still(); }, 120); });
+  document.addEventListener('visibilitychange', () => document.hidden ? stop() : start());
+  RM.addEventListener('change', () => { if (RM.matches) { stop(); still(); } else start(); });
+  DK.addEventListener('change', () => { readColors(); if (RM.matches) still(); });
+
+  // Wait until the viewport has a size (hidden iframes and panes can report 0).
+  (function boot() {
+    if (!innerWidth || !innerHeight) return setTimeout(boot, 100);
+    readColors(); layout();
+    P.x = hill.x; P.y = hill.y;
+    if (RM.matches) { addSummit(W * 0.62, H * 0.4); still(); } else start();
+  })();
+})();
+</script>
+</body>
+</html>

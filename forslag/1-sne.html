@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="da">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Hvidt</title>
+<meta name="description" content="Adam Hvidt · a@hvidt.net">
+<meta name="color-scheme" content="light dark">
+<link rel="icon" href="data:,">
+<style>
+:root{--top:#aebdcb;--bot:#dbe3ea;--ink:#22303d;--snow:#ffffff;--shade:rgba(30,48,66,.28);--muted:#2f3e4c}
+@media (prefers-color-scheme:dark){:root{--top:#08111b;--bot:#1a2938;--ink:#3b5167;--snow:#eef4f8;--shade:rgba(0,0,0,.45);--muted:#93a6b9}}
+html,body{margin:0;height:100%;overflow:hidden;background:var(--bot)}
+canvas{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none;cursor:default}
+.mail{position:fixed;left:0;right:0;bottom:max(20px,env(safe-area-inset-bottom));text-align:center;font:400 14px/1.4 ui-sans-serif,-apple-system,"Helvetica Neue",Arial,sans-serif;letter-spacing:.06em;color:var(--muted);pointer-events:none}
+.mail a{color:inherit;text-decoration:none;pointer-events:auto;border-bottom:1px solid transparent;transition:border-color .2s}
+.mail a:hover,.mail a:focus-visible{border-color:currentColor;outline:none}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+</style>
+</head>
+<body>
+<h1 class="sr">Adam Hvidt</h1>
+<canvas id="c" aria-hidden="true"></canvas>
+<p class="mail">Adam Hvidt · <a href="mailto:a@hvidt.net">a@hvidt.net</a></p>
+<script>
+(() => {
+  // Snow falls, settles on the letters, is blown away by the pointer; a tap shakes it like a snow globe.
+  const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+  const RM = matchMedia('(prefers-reduced-motion: reduce)');
+  const DK = matchMedia('(prefers-color-scheme: dark)');
+  const MAXD = 5, WORD = 'Hvidt';
+  let CELL = 3;
+  const FONT = px => `600 ${px}px "Iowan Old Style","Palatino Linotype",Palatino,"Book Antiqua",Georgia,serif`;
+  let W = 0, H = 0, dpr = 1, cols = 0, rows = 0, grid, snow = new Set(), flakes = [];
+  let fontPx = 0, tx = 0, ty = 0, maxFlakes = 200, raf = 0, last = 0, shake = 0, col = {};
+  const P = { x: -1e4, y: -1e4, vx: 0, vy: 0, in: false, lt: 0, t0: 0, sx: 0, sy: 0 };
+
+  function readColors() {
+    const s = getComputedStyle(document.documentElement);
+    for (const k of ['top', 'bot', 'ink', 'snow', 'shade']) col[k] = s.getPropertyValue('--' + k).trim();
+  }
+
+  function newFlake(top, transient) {
+    const r = 0.7 + Math.random() ** 2 * 2.1;
+    return { x: Math.random() * W, y: top ? -10 - Math.random() * 40 : Math.random() * H,
+      px: 0, py: 0, vx: 0, vy: 0.3 + r * 0.3, r, ph: Math.random() * 6.28, w: 0.5 + Math.random(), tr: !!transient };
+  }
+
+  function layout() {
+    W = innerWidth; H = innerHeight; dpr = Math.min(2, devicePixelRatio || 1);
+    CELL = W < 700 ? 2 : 3;
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+    cols = Math.ceil(W / CELL); rows = Math.ceil(H / CELL);
+    grid = new Uint8Array(cols * rows); snow = new Set();
+    fontPx = Math.min(W * 0.27, H * 0.36);
+    ctx.font = FONT(fontPx);
+    const m = ctx.measureText(WORD);
+    tx = W / 2; ty = H * 0.47 + (m.actualBoundingBoxAscent - m.actualBoundingBoxDescent) / 2;
+    // Rasterise the word once at CSS resolution and sample it at cell centres.
+    const off = document.createElement('canvas'); off.width = W; off.height = H;
+    const o = off.getContext('2d', { willReadFrequently: true });
+    o.font = FONT(fontPx); o.textAlign = 'center'; o.fillText(WORD, tx, ty);
+    const d = o.getImageData(0, 0, W, H).data;
+    for (let cy = 0; cy < rows; cy++) for (let cx = 0; cx < cols; cx++) {
+      const x = Math.min(W - 1, cx * CELL + 1), y = Math.min(H - 1, cy * CELL + 1);
+      if (d[(y * W + x) * 4 + 3] > 110) grid[cy * cols + cx] = 1;
+    }
+    maxFlakes = Math.round(Math.max(110, Math.min(380, W * H / 4500)));
+    flakes = []; for (let i = 0; i < maxFlakes; i++) flakes.push(newFlake(false));
+    cover(RM.matches ? 2.2 : 1.3);
+  }
+
+  // Lay an initial blanket of snow on every upward-facing letter surface.
+  function cover(depth) {
+    for (let cx = 0; cx < cols; cx++) for (let cy = 1; cy < rows; cy++) {
+      const i = cy * cols + cx;
+      if (grid[i] !== 1 || grid[i - cols] !== 0) continue;
+      let n = Math.round(depth + 1.1 * Math.sin(cx * 0.13) + 0.8 * Math.sin(cx * 0.041 + 1) + Math.random() * 0.8);
+      n = Math.max(0, Math.min(MAXD, n));
+      for (let k = 1; k <= n && cy - k >= 0; k++) { const j = (cy - k) * cols + cx; if (grid[j]) break; grid[j] = 2; snow.add(j); }
+    }
+  }
+
+  function depthBelow(cx, cy) { let n = 0; while (cy + 1 + n < rows && grid[(cy + 1 + n) * cols + cx] === 2) n++; return n; }
+
+  function release(idx, vx, vy) {
+    grid[idx] = 0; snow.delete(idx);
+    const f = newFlake(false, true);
+    f.x = (idx % cols) * CELL + CELL / 2; f.y = ((idx / cols) | 0) * CELL; f.vx = vx; f.vy = vy; f.r = 0.9 + Math.random() * 1.4;
+    flakes.push(f);
+  }
+
+  function step(k, t) {
+    const sp = Math.hypot(P.vx, P.vy), R = 120;
+    for (let i = flakes.length - 1; i >= 0; i--) {
+      const f = flakes[i];
+      f.px = f.x; f.py = f.y;
+      if (P.in) {
+        const dx = f.x - P.x, dy = f.y - P.y, d2 = dx * dx + dy * dy;
+        if (d2 < R * R) { const fo = 1 - Math.sqrt(d2) / R; f.vx += P.vx * 0.06 * fo * k; f.vy += P.vy * 0.04 * fo * k; }
+      }
+      const term = 0.3 + f.r * 0.32;
+      f.vx *= 0.965 ** k; f.vy += (term - f.vy) * 0.03 * k;
+      f.x += (f.vx + Math.sin(t * 0.0011 * f.w + f.ph) * 0.25 * f.r) * k;
+      f.y += f.vy * k;
+      if (f.x < -10) f.x += W + 20; else if (f.x > W + 10) f.x -= W + 20;
+      if (f.y > H + 8) { if (f.tr) { flakes.splice(i, 1); continue; } Object.assign(f, newFlake(true)); continue; }
+      if (f.y < 0) continue;
+      let cx = (f.x / CELL) | 0, cy = (f.y / CELL) | 0;
+      if (cx < 0 || cx >= cols || cy >= rows - 1) continue;
+      if (grid[cy * cols + cx]) { f.x = f.px; f.y = f.py; f.vx = 0; cx = (f.x / CELL) | 0; cy = (f.y / CELL) | 0; if (cx < 0 || cx >= cols || cy < 0 || grid[cy * cols + cx]) continue; }
+      if (!grid[(cy + 1) * cols + cx]) continue;
+      if (Math.hypot(f.vx, f.vy) > 2.2) continue; // fast flakes skip off the surface
+      const dir = Math.random() < 0.5 ? -1 : 1, nx = cx + dir;
+      if (nx >= 0 && nx < cols && !grid[cy * cols + nx] && !grid[(cy + 1) * cols + nx]) { f.x += dir * CELL; continue; }
+      if (depthBelow(cx, cy) >= MAXD) { if (f.tr) flakes.splice(i, 1); else Object.assign(f, newFlake(true)); continue; }
+      const idx = cy * cols + cx; grid[idx] = 2; snow.add(idx);
+      if (f.tr) flakes.splice(i, 1); else Object.assign(f, newFlake(true));
+    }
+    // Strong gusts lift snow off the surface.
+    if (P.in && sp > 2.5) {
+      const rc = Math.ceil(R / CELL), pcx = (P.x / CELL) | 0, pcy = (P.y / CELL) | 0, gust = Math.min(1, sp / 18);
+      for (let cy = Math.max(1, pcy - rc); cy < Math.min(rows, pcy + rc); cy++)
+        for (let cx = Math.max(0, pcx - rc); cx < Math.min(cols, pcx + rc); cx++) {
+          const i = cy * cols + cx;
+          if (grid[i] !== 2 || grid[i - cols] === 2) continue;
+          const fo = 1 - Math.hypot(cx - pcx, cy - pcy) / rc;
+          if (fo > 0 && Math.random() < 0.3 * fo * gust * k && flakes.length < maxFlakes * 4)
+            release(i, P.vx * 0.35 + (Math.random() - 0.5), P.vy * 0.3 - Math.random() * 1.6);
+        }
+    }
+    P.vx *= 0.86 ** k; P.vy *= 0.86 ** k;
+    shake *= 0.94 ** k;
+  }
+
+  function globeShake() {
+    shake = 1;
+    const cells = [...snow];
+    for (const i of cells) {
+      if (flakes.length < maxFlakes * 5 && Math.random() < 0.7) release(i, (Math.random() - 0.5) * 5, -1 - Math.random() * 4.5);
+      else { grid[i] = 0; snow.delete(i); }
+    }
+    for (const f of flakes) { f.vx += (Math.random() - 0.5) * 6; f.vy -= Math.random() * 3; }
+  }
+
+  function draw(t) {
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, col.top); g.addColorStop(1, col.bot);
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    if (shake > 0.01) ctx.translate(Math.sin(t * 0.06) * shake * 7, Math.cos(t * 0.083) * shake * 3);
+    ctx.font = FONT(fontPx); ctx.textAlign = 'center'; ctx.fillStyle = col.ink; ctx.fillText(WORD, tx, ty);
+    const r = CELL * 0.92;
+    for (const [style, off] of [[col.shade, 1.2], [col.snow, 0]]) {
+      ctx.fillStyle = style; ctx.beginPath();
+      for (const i of snow) { const x = (i % cols) * CELL + CELL / 2, y = ((i / cols) | 0) * CELL + CELL / 2 + off; ctx.moveTo(x + r, y); ctx.arc(x, y, r, 0, 6.2832); }
+      ctx.fill();
+    }
+    ctx.fillStyle = col.snow;
+    for (const f of flakes) { ctx.globalAlpha = 0.45 + f.r / 5; ctx.beginPath(); ctx.arc(f.x, f.y, f.r, 0, 6.2832); ctx.fill(); }
+    ctx.globalAlpha = 1;
+  }
+
+  function frame(t) {
+    raf = requestAnimationFrame(frame);
+    const k = Math.min(3, (t - last) / 16.67 || 1); last = t;
+    step(k, t); draw(t);
+  }
+  function start() { if (!raf && !RM.matches && !document.hidden) { last = performance.now(); raf = requestAnimationFrame(frame); } }
+  function stop() { cancelAnimationFrame(raf); raf = 0; }
+  function still() { draw(0); }
+
+  cv.addEventListener('pointermove', e => {
+    const now = performance.now(), dt = Math.max(8, now - (P.lt || now - 16)) / 16.67;
+    if (P.in) { P.vx = P.vx * 0.5 + ((e.clientX - P.x) / dt) * 0.5; P.vy = P.vy * 0.5 + ((e.clientY - P.y) / dt) * 0.5; }
+    P.x = e.clientX; P.y = e.clientY; P.lt = now; P.in = e.pointerType === 'mouse' || e.buttons > 0;
+  });
+  cv.addEventListener('pointerdown', e => { P.x = e.clientX; P.y = e.clientY; P.in = true; P.t0 = performance.now(); P.sx = e.clientX; P.sy = e.clientY; cv.setPointerCapture(e.pointerId); });
+  cv.addEventListener('pointerup', e => {
+    if (performance.now() - P.t0 < 350 && Math.hypot(e.clientX - P.sx, e.clientY - P.sy) < 10 && !RM.matches) globeShake();
+    if (e.pointerType !== 'mouse') P.in = false;
+  });
+  cv.addEventListener('pointerleave', () => { P.in = false; });
+  cv.addEventListener('pointercancel', () => { P.in = false; });
+
+  let rt; addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(() => { if (!innerWidth || !innerHeight) return; layout(); if (RM.matches) still(); }, 120); });
+  document.addEventListener('visibilitychange', () => document.hidden ? stop() : start());
+  RM.addEventListener('change', () => { layout(); if (RM.matches) { stop(); still(); } else start(); });
+  DK.addEventListener('change', () => { readColors(); if (RM.matches) still(); });
+
+  // Wait until the viewport has a size (hidden iframes and panes can report 0).
+  (function boot() {
+    if (!innerWidth || !innerHeight) return setTimeout(boot, 100);
+    readColors(); layout();
+    if (RM.matches) still(); else start();
+  })();
+})();
+</script>
+</body>
+</html>
