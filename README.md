@@ -6,6 +6,6 @@ Pure mood: one static `index.html` with an inline canvas animation, the name, an
 
 - `index.html` – the live page: the name drawn by ~1,500 dots (chosen 11/11-2026 from `forslag/2-partikler.html`).
 - `forslag/` – the four prototypes (snow, particles, contour lines, ink) kept for reference.
-- Hosting: Simply.com webhotel (`ssh hvidt`). Nothing is uploaded without Adam's explicit approval.
+- Hosting: GitHub Pages (`.github/workflows/pages.yml` publishes only `index.html` on push to main). DNS for hvidt.net stays at Simply (DNS Service); mail records there must not be touched.
 
 Tracker: `project_tracker/tekst-og-data/_drift.md` § Parkeret.
