@@ -29,7 +29,7 @@ canvas{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:
   const cv = document.getElementById('c'), ctx = cv.getContext('2d');
   const RM = matchMedia('(prefers-reduced-motion: reduce)');
   const DK = matchMedia('(prefers-color-scheme: dark)');
-  const WORD = 'Hvidt', TARGET = 1500, STARS = 70;
+  const WORD = 'hvidt.net', TARGET = 2000, STARS = 70;
   const FONT = px => `600 ${px}px "Iowan Old Style","Palatino Linotype",Palatino,"Book Antiqua",Georgia,serif`;
   let W, H, dpr, n = 0, x, y, vx, vy, hx, hy, sx, sy, svx, svy, ph, dl, size = 2;
   let S = 0, sTarget = 0, scatterUntil = 0, raf = 0, last = 0, col = {};
@@ -47,7 +47,9 @@ canvas{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:
     const off = document.createElement('canvas'); off.width = W; off.height = H;
     const o = off.getContext('2d', { willReadFrequently: true });
     o.font = FONT(fontPx); o.textAlign = 'center';
-    const m = o.measureText(WORD);
+    // Shrink until the word fits within 88% of the width.
+    let m = o.measureText(WORD);
+    if (m.width > W * 0.88) { o.font = FONT(fontPx * W * 0.88 / m.width); m = o.measureText(WORD); }
     o.fillText(WORD, W / 2, H * 0.47 + (m.actualBoundingBoxAscent - m.actualBoundingBoxDescent) / 2);
     const d = o.getImageData(0, 0, W, H).data;
     let area = 0; for (let i = 3; i < d.length; i += 16) if (d[i] > 128) area += 4;
